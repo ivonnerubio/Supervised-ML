@@ -1,0 +1,22 @@
+An example of an analysis of some public breast cancer data.
+Analysis done in R using RMarkdown
+
+Some background on the data
+
+From paper Using Resistin, glucose, age and BMI to predict the presence of breast cancer, https://bmccancer.biomedcentral.com/track/pdf/10.1186/s12885-017-3877-1
+
+The goal of this exploratory study was to develop and assess a prediction model which can potentially
+be used as a biomarker for breast cancer, based on anthropometric data and parameters which can be gathered in
+routine blood analysis.
+
+For each of the 166 participants several clinical features were observed or measured, including
+
+Age
+BMI (Body Mass Index)
+Glucose
+Insulin
+HOMA (The homeostasis model assessment (HOMA), based on plasma levels of fasting glucose and insulin, has been widely validated and applied for quantifying insulin resistance and β-cell function)
+Leptin (A hormone predominantly made by adipose cells that helps to regulate energy balance by inhibiting hunger)
+Adiponectin (A protein hormone which is involved in regulating glucose levels as well as fatty acid breakdown)
+Resistin (An adipocyte-secreted hormone (adipokine) linked to obesity and insulin resistance in rodents)
+MCP-1 (Monocyte chemoattractant protein-1is a potent chemoattractant for monocytes and macrophages to areas of inflammation)

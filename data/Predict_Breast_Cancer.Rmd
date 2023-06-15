@@ -1,0 +1,404 @@
+---
+title: "Breast Cancer Prediction Model"
+author: "Steve Marshall"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: default
+---
+
+## Background
+
+From paper Using Resistin, glucose, age and BMI to predict the presence of breast cancer, https://bmccancer.biomedcentral.com/track/pdf/10.1186/s12885-017-3877-1
+
+The goal of this exploratory study was to develop and assess a prediction model which can potentially
+be used as a biomarker for breast cancer, based on anthropometric data and parameters which can be gathered in
+routine blood analysis.
+
+For each of the 166 participants several clinical features were observed or measured, including 
+* Age
+* BMI (Body Mass Index)
+* Glucose
+* Insulin
+* HOMA (The homeostasis model assessment (HOMA), based on plasma levels of fasting glucose and insulin, has been widely validated and applied for quantifying insulin resistance and β-cell function)
+* Leptin (A hormone predominantly made by adipose cells that helps to regulate energy balance by inhibiting hunger)
+* Adiponectin (A protein hormone which is involved in regulating glucose levels as well as fatty acid breakdown)
+* Resistin (An adipocyte-secreted hormone (adipokine) linked to obesity and insulin resistance in rodents)
+* MCP-1 (Monocyte chemoattractant protein-1is a potent chemoattractant for monocytes and macrophages to areas of inflammation)
+
+
+```{r config_envt, include = FALSE}
+set.seed(4321)
+
+r_packages <- c("knitr","tidyr","readxl","here","skimr","purrr",
+                "dplyr","git2r","uuid","ggcorrplot","factoextra",
+                "cluster", "FactoMineR","fabricatr","randomForest",
+                "arsenal","survival","NbClust","dendextend","caTools",
+                "caret","e1071","doParallel","caretEnsemble")
+
+if (length(setdiff(r_packages, rownames(installed.packages()))) > 0) {
+  print("Installing packages...")
+  install.packages(setdiff(r_packages, rownames(installed.packages())))
+}
+# load all libraries
+for(i in c(r_packages)) {
+  library(i,character.only=TRUE)
+}
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_knit$set(proj.dir = here())
+knitr::opts_knit$set(data.dir = here("data"))
+knitr::opts_knit$set(src.dir = here("src"))
+knitr::opts_knit$set(graphs.dir = here("graphs"))
+knitr::opts_chunk$set(
+  # can't seem to specify full path from above
+  fig.path = "../../graphs/"
+)
+if(!dir.exists(opts_knit$get("graphs.dir"))) {
+  dir.create(opts_knit$get("graphs.dir"),recursive=TRUE, showWarnings = FALSE)
+}
+knitr::opts_knit$set(uuid = UUIDgenerate(TRUE))
+n_cores <- detectCores()
+registerDoParallel(cores = n_cores - 1)
+```
+
+
+## Data Overview
+
+* Explore descriptive stats
+* General distributions
+* Correlated variable
+* Summary by disease status
+
+```{r load_data, echo = FALSE, results = "asis"}
+url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/00451/dataR2.xlsx"
+data_file <- file.path(knitr::opts_knit$get("data.dir"),"dataR2.xlsx")
+if(!file.exists(data_file)) {
+  tryCatch(download.file(url, destfile = data_file, method="curl"),
+    error = function(e) return(sprintf("Error: %s", e)))
+}
+# read from excel
+data <- readxl::read_excel(data_file)
+data$Disease_Status <- factor(ifelse(data$Classification == "1", "healthy","disease"))
+# get overview of data
+skim(data) %>% kable()
+```
+
+### Data Exploration
+
+* Any correlated variables/features?
+
+```{r corr_vars, echo = FALSE}
+corr <- data %>% select_if(is.numeric) %>% cor(method="spearman")
+ggcorrplot(corr, 
+           hc.order = TRUE, 
+           type = "lower",
+           title = "All by All Correlation of Clinical Variables",
+           outline.col = "white",
+           lab = TRUE)
+
+numeric_cols <- unlist(lapply(data, is.numeric))
+numeric_cols <- names(numeric_cols[numeric_cols])
+
+colors <- c('blue', 'grey')[sort(unclass(data$Disease_Status))]
+color_transparent <- adjustcolor(colors, alpha.f = 0.3) 
+pairs(data[numeric_cols], pch = 19,  cex = 0.6,
+      col = color_transparent,
+      lower.panel=NULL,
+      main = "XY Scatter Plot of All Clinical Variables")
+par(xpd = TRUE)
+legend("bottomleft",
+       fill = unique(colors),
+       legend = c(levels(data$Disease_Status)))
+
+```
+
+### Summary by Disease
+
+```{r summary_by_disease, echo = FALSE, results = "asis"}
+table_by_disease <- tableby(Disease_Status ~ ., data = subset(data, select = -c(Classification)))
+summary(table_by_disease,pfootnote=TRUE)
+```
+
+## Data Analysis
+* Look for patterns
+* Unsupervised techniques
+    * PCA
+    * Hierarchical clustering using Agnes 
+    * These functions behave very similarly; however, with the agnes function you can also get the agglomerative coefficient, which measures the amount of clustering structure found (values closer to 1 suggest strong clustering structure)
+    * Agglomeration method to be used (i.e. "complete", "average", "single", "ward")
+    * The choice of distance measures is very important, as it has a strong influence on the clustering results
+    * For most common clustering software, the default distance measure is the Euclidean distance
+    * Depending on the type of the data and the researcher questions, other dissimilarity measures might be preferred
+    * For example, correlation-based distance is often used in gene expression data analysis
+    * Correlation-based distance considers two objects to be similar if their features are highly correlated, even though the observed values may be far apart in terms of Euclidean distance
+    * The distance between two objects is 0 when they are perfectly correlated
+    * Pearson’s correlation is quite sensitive to outliers
+
+### Clustering
+```{r scale_data, echo = FALSE}
+# remove binary classification and do pca only on numerical data
+data_scaled <- data %>%
+  subset(select = -c(Classification)) %>%
+  select_if(is.numeric) %>%
+  scale
+```
+
+```{r clustering, echo = FALSE}
+
+# iterate through different method to find best one
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")
+# function to compute coefficient
+ac <- function(x) {
+  agnes(data_scaled, method = x)$ac
+}
+
+best_method <- data.frame("method" = m, coefficient = map_dbl(m, ac))
+best_method <- arrange(best_method, desc(coefficient)) %>%
+          mutate(rank = 1:nrow(best_method))
+kable(best_method, digits = 3, caption = "Clustering methods coefficients",
+      format = "markdown")
+
+# use best method
+method <- as.character(best_method[best_method$rank == 1, "method"])
+hc <- agnes(data_scaled, method = method)
+
+dend <- as.dendrogram(hc)
+temp_col <- c("grey", "blue")[as.numeric(data$Classification)]
+temp_col <- temp_col[order.dendrogram(dend)]
+temp_col <- factor(temp_col, unique(temp_col))
+
+dend %>% color_branches(clusters = as.numeric(temp_col), col = levels(temp_col)) %>%
+  set("labels_colors", as.character(temp_col)) %>%
+  set("labels_cex", 0.5) %>%
+  plot(main = "Hierarchical Clustering of Patient\nClinical Features")
+legend("topleft", legend = unique(data$Disease_Status), fill = c("grey","blue"))
+
+```
+
+* Explore data clusters
+  * Various techniques like silhouette
+  * Silhouette analysis can be used to study the separation distance between the resulting clusters
+  * The silhouette plot displays a measure of how close each point in one cluster is to points in the neighboring clusters and thus provides a way to assess parameters like number of clusters visually
+
+#### Optimal clusters 
+
+```{r optimal_clusters_hcut, echo = FALSE}
+clustering_method <- "kmeans"
+nb <- NbClust(data_scaled, distance = "euclidean", min.nc = 2,
+        max.nc = 10, method = clustering_method)
+fviz_nbclust(nb) + labs(title = tools::toTitleCase(paste(clustering_method,"clustering optimal clusters")))
+# get best partition
+t <- table(nb$Best.partition)
+# Cut tree into optimal groups
+cluster_group <- cutree(dend, k = names(t)[which.max(t)])
+condition <- ifelse(data$Disease_Status == "disease",2,1)
+# Number of members in each cluster
+kable(as.data.frame(table(cluster_group), caption = "Cluster Membership Counts"))
+```
+
+
+### PCA
+
+* PCA plot
+* Identify contributing variables
+
+```{r biplot, echo = FALSE}
+data_pca <- prcomp(data_scaled)
+fviz_eig(data_pca, addlabels = TRUE, ylim = c(0, 50))
+fviz_pca_biplot(data_pca, 
+                # Individuals
+                geom.ind = "point",
+                fill.ind = data$Disease_Status,
+                col.ind = "black",
+                pointshape = 21,
+                pointsize = 2,
+                palette = c('blue', 'grey'),
+                addEllipses = TRUE,
+                mean.point = FALSE,
+                alpha.var ="contrib",
+                col.var = "contrib",
+                gradient.cols = "lancet",
+                legend.title = list(fill = "Disease", color = "Contrib",
+                                    alpha = "Contrib")
+                )
+```
+
+### Machine Learning
+
+* Explore various machine learning algorithms
+  * GLM
+  * RandomForest
+* Split data into test and train
+
+```{r train_test_data, echo = FALSE}
+metric <- "ROC"
+data_subset <- subset(data, select = -c(Classification))
+data_index <- createDataPartition(data$Disease_Status, p = 0.7, list = FALSE)
+train_data <- data_subset[data_index,]
+test_data <- data_subset[-data_index,]
+# look at status distribution
+kable(test_data %>% count(Disease_Status), caption = "Test data distribution")
+kable(train_data %>% count(Disease_Status), caption = "Training data distribution")
+```
+
+### Explore various ML algorithms
+```{r explore_algoritms, warning=FALSE}
+
+# length is = (n_repeats*nresampling)+1
+seeds <- vector(mode = "list", length = 11)
+for(i in 1:10) seeds[[i]] <- rep(1234, ncol(train_data)-1)
+# for the last model
+seeds[[11]] <- rep(1234, 1)
+
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 10,
+                     repeats = 3,
+                     index = createResample(train_data$Disease_Status, 10),
+                     classProbs = TRUE,
+                     seeds = seeds,
+                     summaryFunction = twoClassSummary,
+                     savePredictions = 'final',
+                     allowParallel = TRUE)
+
+algorithms <- c('adaboost','glmnet','lda','knn','nb','parRF','rpart','svmRadialWeights')
+
+models <- caretList(Disease_Status ~ .,
+                    data = train_data,
+                    metric = metric,
+                    trControl = ctrl,
+                    preProcess = c("center", "scale"),
+                    methodList = algorithms)
+results <- resamples(models)
+summary(results)
+dotplot(results)
+model_cor <- modelCor(results)
+ggcorrplot(model_cor, 
+           hc.order = TRUE, 
+           type = "lower",
+           title = "All by All Correlation of Models",
+           outline.col = "white",
+           lab = TRUE)
+
+plot(varImp(models$glmnet), main = "GLMnet - Variable Importance Plot")
+plot(varImp(models$parRF), main = "Parallel Random Forest - Variable Importance Plot")
+
+```
+
+### Ensemble method
+```{r ensemble, warning=FALSE}
+greedy_ensemble <- caretEnsemble(
+  models, 
+  metric = metric,
+  trControl = trainControl(
+    number = length(algorithms),
+    summaryFunction = twoClassSummary,
+    classProbs = TRUE
+    ))
+summary(greedy_ensemble)
+
+model_preds <- lapply(models, predict, newdata = test_data, type = "prob")
+model_preds <- lapply(model_preds, function(x) x[,"disease"])
+model_preds <- data.frame(model_preds)
+ens_preds <- predict(greedy_ensemble, newdata = test_data, type = "prob")
+model_preds$ensemble <- ens_preds
+caTools::colAUC(model_preds, test_data$Disease_Status)
+
+```
+
+#### Random Forest
+
+* Search for optimal parameters in RF
+
+```{r rf_grid_search, echo = FALSE}
+
+# plot metrics function
+plot_metrics <- function(model) {
+  theme_set(theme_minimal())
+  u <- model$results %>%
+    gather(a, b, -mtry)
+  u %>%
+    ggplot(aes(mtry, b)) +
+    geom_line() +
+    geom_point() +
+    facet_wrap(~ a, scales = "free") +
+    labs(x = "Number of mtry", y = NULL,
+         title = "The Relationship between Model Performance and mtry",
+         subtitle = paste("Number of ntree:",  model$finalModel$ntree))
+  }
+
+
+my_grid <- expand.grid(mtry = seq(1:(ncol(train_data)-1)))
+model_list <- list()
+
+for (i in seq(50, 250, by = 50)) {
+  set.seed(i)
+  rf <- train(Disease_Status ~.,
+              data = train_data, 
+              method = "parRF", 
+              metric = metric, 
+              tuneGrid = my_grid,
+              preProcess = c('center', 'scale'),
+              ntree = i, 
+              trControl = ctrl)
+  key <- toString(i)
+  model_list[[key]] <- rf
+  
+}
+
+results <- resamples(model_list)
+summary(results)
+# plot metrics
+lapply(model_list, plot_metrics)
+
+# best parameters
+ntree <- 250
+rf_model <- train(Disease_Status ~.,
+                  data = train_data, 
+                  method = "parRF",
+                  metric = metric,
+                  tuneGrid = my_grid,
+                  ntree = ntree,
+                  preProcess = c('center', 'scale'),
+                  trControl = ctrl)
+
+rf_model
+```
+
+```{r svm_grid}
+my_grid <- expand.grid(C = c(.25, .5, 1),sigma = c(.01,.05,.1), Weight = 1:2)
+model_list <- list()
+
+# length is = (n_repeats*nresampling)+1
+seeds <- vector(mode = "list", length = 11)
+for(i in 1:10) seeds[[i]] <- sample.int(1000, 27)
+# for the last model
+seeds[[11]] <- rep(1234, 1)
+
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 10,
+                     repeats = 3,
+                     index = createResample(train_data$Disease_Status, 10),
+                     classProbs = TRUE,
+                     seeds = seeds,
+                     summaryFunction = twoClassSummary,
+                     savePredictions = 'final',
+                     allowParallel = TRUE)
+
+svm_model <- train(
+  Disease_Status ~ .,
+  data = train_data,
+  method = "svmRadialWeights",
+  trControl = ctrl,
+  metric = metric,
+  preProcess = c('center', 'scale'),
+  tuneGrid = my_grid
+  )
+
+svm_model
+```
+
+
+
+
