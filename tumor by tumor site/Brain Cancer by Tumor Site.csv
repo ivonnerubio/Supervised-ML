@@ -1,0 +1,11 @@
+Age Group,Age Adjusted Lower Confidence Interval,Age Adjusted Upper Confidence Interval,Age Adjusted Mortality Rate,Type of Tumor,Count of People Diagnosed With Cancer,Total Population,Gender,Cancer Organ Site,Data Collection Starting Year,Data Collection Ending Year,Crude Lower Confidence Interval,Crude Upper Confidence Interval,Crude Rate of Deaths
+0-19,,,,Benign/Borderline,,39865121,Female,All other,2004,,,,
+0-19,,,,Malignant,,39865121,Female,All other,2004,,,,
+0-19,,,,Benign/Borderline,,39998876,Female,All other,2005,,,,
+0-19,,,,Malignant,,39998876,Female,All other,2005,,,,
+0-19,,,,Benign/Borderline,,40165421,Female,All other,2006,,,,
+0-19,,,,Malignant,,40165421,Female,All other,2006,,,,
+0-19,,,,Benign/Borderline,,40382360,Female,All other,2007,,,,
+0-19,,,,Malignant,,40382360,Female,All other,2007,,,,
+0-19,,,,Benign/Borderline,,40576293,Female,All other,2008,,,,
+0-19,,,,Malignant,,40576293,Female,All other,2008,,,,
